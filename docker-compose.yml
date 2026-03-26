@@ -1,7 +1,7 @@
 services:
     db-user:
       image: postgres:16
-      container_name: meu-postgres
+      container_name: user-postgres
       environment:
         POSTGRES_DB: usuario
         POSTGRES_USER: postgres
@@ -11,8 +11,33 @@ services:
       ports:
         - "5432:5432"
       volumes:
-        - postgres_data:/var/lib/postgresql/data
-
+        - user_postgres_data:/var/lib/postgresql/data
+    db-pedidos:
+      image: postgres:16
+      container_name: pedido-postgre
+      environment:
+        POSTGRES_DB: ms_pedidos
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: senha123
+      networks: 
+        - arq-network
+      ports:
+        - "5433:5432"
+      volumes:
+        - pedidos_postgres_data:/var/lib/postgresql/data
+    db-livros:
+      image: postgres:16
+      container_name: db-livros
+      environment:
+        POSTGRES_DB: books-service
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: postgres@local
+      networks: 
+        - arq-network
+      ports:
+        - "5434:5432"
+      volumes:
+        - livros_postgres_data:/var/lib/postgresql/data
     keycloak-service:
       image: quay.io/keycloak/keycloak:24.0
       container_name: keycloak
@@ -51,18 +76,130 @@ services:
       volumes:
         - ./data/jaeger:/badger
 
-    ## 
+    rabbitmq:
+      image: rabbitmq:3-management
+      container_name: rabbitmq
+      networks:
+        - arq-network
+      ports:
+        - "5672:5672"    # AMQP
+        - "15672:15672"  # Management UI  →  http://localhost:15672
+      environment:
+        RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+        RABBITMQ_HOST: rabbitmq
+        RABBITMQ_PORT: 5672
+        RABBITMQ_DEFAULT_USER: guest
+        RABBITMQ_DEFAULT_PASS: guest
+      healthcheck:
+        test: ["CMD", "rabbitmq-diagnostics", "ping"]
+        interval: 10s
+        timeout: 5s
+        retries: 10
+
+    ## Microservices
     ms-user:
+      container_name: ms-user
       image: ${DOCKER_REGISTRY-}ms-user
       build:
         context: ./identity-users
         dockerfile: Dockerfile
       ports: 
         - "9009:9009"
+      depends_on:
+        - db-user
       networks:
         - arq-network
+    ms-payment:
+      container_name: ms-payment
+      image: ${DOCKER_REGISTRY-}ms-payment
+      build:
+        context: ./payment-service
+        dockerfile: Dockerfile
+      ports: 
+        - "9010:9010"
+      environment:
+        RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+        RABBITMQ_EXCHANGE: "orders.exchange"
+        RABBITMQ_ROUTING_KEY: "order.created"
+        PORT: 9010
+        PYTHONUNBUFFERED: 1
+      depends_on:
+        rabbitmq:
+          condition: service_healthy 
+      networks:
+        - arq-network
+    ms-notification:
+      container_name: ms-notification
+      image: ${DOCKER_REGISTRY-}ms-notification
+      build:
+        context: ./notification-service
+        dockerfile: Dockerfile
+      environment:
+        PORT: 9011
+        NODE_ENV: development
+        RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+        RABBITMQ_EXCHANGE: payment.events
+        PAYMENT_RESULT_QUEUE: payment.process.payment_results
+        LOG_LEVEL: debug
+      depends_on:
+        rabbitmq:
+          condition: service_healthy
+      ports: 
+        - "9011:9011"
+      networks:
+        - arq-network
+    ms-pedidos:
+      container_name: ms-pedidos
+      image: ${DOCKER_REGISTRY-}ms-pedidos
+      build:
+        context: ./ms-pedidos
+        dockerfile: Dockerfile
+      ports:
+        - '${PORT:-9012}:9012'
+      environment:
+        NODE_ENV: development
+        PORT: 9012
+        DB_HOST: db-pedidos
+        DB_PORT: 5432
+        DB_USERNAME: ${DB_USERNAME:-postgres}
+        DB_PASSWORD: ${DB_PASSWORD:-senha123}
+        DB_DATABASE: ${DB_DATABASE:-ms_pedidos}
+      depends_on:
+        - db-pedidos
+      networks:
+        - arq-network
+      restart: unless-stopped
+      pull_policy: always
+    ms-livros:
+      container_name: ms-livros
+      image: ${DOCKER_REGISTRY-}ms-livros
+      depends_on:
+        - db-livros
+      build:
+        context: ./livros-service
+        dockerfile: Dockerfile
+      ports: 
+        - "9013:9013"
+        - "5005:5005"
+      environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - DB_HOST=db-livros
+      - DB_PORT=5432
+      - DB_NAME=books-service
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=postgres@local
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USERNAME=guest
+      - RABBITMQ_PASSWORD=guest
+      - JAVA_OPTS=-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0
+      networks:
+        - arq-network
+
 volumes:
-  postgres_data:
+  pedidos_postgres_data:
+  user_postgres_data:
+  livros_postgres_data:
 
 networks:
   arq-network:

@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source code
 COPY . .
 
-CMD ["python", "src/main.py"]
+CMD ["/bin/bash", "-c", "ls -la && python src/main.py"]
